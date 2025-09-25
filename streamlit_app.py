@@ -182,34 +182,42 @@ else:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 # ===================== DRAW.IO DIAGRAM BLOCK (paste below the Excel button) =====================
-# ======= DRAW.IO DIAGRAM (bus-style org chart) =======
+# ======= DRAW.IO DIAGRAM (clean bus-style org chart) =======
 if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
     import xml.etree.ElementTree as ET
     import zlib, base64, uuid
 
     def _make_drawio_xml(df: pd.DataFrame) -> str:
-        # --- constants / layout ---
-        W, H = 180, 48
-        X_STEP = 230
-        Y_LEDGER, Y_LE, Y_BU = 80, 220, 360
-        BUS_Y = (Y_LEDGER + Y_LE) / 2.0      # shared horizontal run for Ledger←LE edges
-        PAD_GROUP = 60                        # extra spacing between ledgers
-        RIGHT_PAD = 160                       # spacing before unassigned area
+        # --- layout & spacing ---
+        LEFT_PAD   = 260               # leave room for legend
+        W, H       = 180, 48
+        X_STEP     = 230
+        PAD_GROUP  = 60
+        RIGHT_PAD  = 160
 
-        # styles (palette: Ledger 🔴, LE 🟧, BU 🟨)
+        # vertical positions (more top space)
+        Y_LEDGER   = 170
+        Y_LE       = 330
+        Y_BU       = 490
+        BUS_Y      = 250               # horizontal “bus” between Ledgers and LEs
+
+        # styles (Ledger 🔴, LE 🟧, BU 🟨)
         S_LEDGER = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE6E6;strokeColor=#C86868;fontSize=12;"
         S_LE     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE2C2;strokeColor=#A66000;fontSize=12;"
         S_BU     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1B3;strokeColor=#B38F00;fontSize=12;"
 
-        # orthogonal edges; special bus variant for LE→Ledger
+        # edge styles
         S_EDGE_OTHER  = (
             "endArrow=block;rounded=1;"
             "edgeStyle=orthogonalEdgeStyle;orthogonal=1;jettySize=auto;"
+            "strokeColor=#666666;"
             "exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
         )
+        # for bus edges we’ll provide two explicit waypoints
         S_EDGE_LEDGER = (
             "endArrow=block;rounded=1;"
-            "edgeStyle=orthogonalEdgeStyle;elbow=horizontal;orthogonal=1;jettySize=auto;"
+            "edgeStyle=orthogonalEdgeStyle;orthogonal=1;jettySize=auto;"
+            "strokeColor=#444444;"
             "exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
         )
 
@@ -218,7 +226,7 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
         for c in df.columns:
             df[c] = df[c].fillna("").map(str).str.strip()
 
-        # mappings (disambiguate LE by ledger)
+        # disambiguate LEs by ledger
         ledgers = sorted([x for x in df["Ledger Name"].unique() if x])
         led_to_les = {}   # {ledger: sorted unique (ledger, le)}
         le_to_bus  = {}   # {(ledger, le): sorted unique BU}
@@ -229,26 +237,27 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                 key = (L, E)
                 led_to_les.setdefault(L, set()).add(key)
             if L and E and B:
-                key = (L, E)
-                le_to_bus.setdefault(key, set()).add(B)
+                le_to_bus.setdefault((L, E), set()).add(B)
 
         unassigned_les = sorted(
             set(df.loc[(df["Ledger Name"] == "") & (df["Legal Entity"] != ""), "Legal Entity"].unique())
         )
-        assigned_bus = set(df.loc[(df["Ledger Name"] != "") & (df["Legal Entity"] != "") & (df["Business Unit"] != ""), "Business Unit"])
+        assigned_bus = set(
+            df.loc[(df["Ledger Name"] != "") & (df["Legal Entity"] != "") & (df["Business Unit"] != ""), "Business Unit"]
+        )
         all_bus = set(df.loc[df["Business Unit"] != "", "Business Unit"])
         unassigned_bus = sorted(all_bus - assigned_bus)
 
         led_to_les = {L: sorted(v, key=lambda k: k[1]) for L, v in led_to_les.items()}
         le_to_bus  = {k: sorted(v) for k, v in le_to_bus.items()}
 
-        # --- compute x-positions ---
-        next_x = 40
+        # --- compute x positions (group by ledger, then LEs, then BUs) ---
+        next_x = LEFT_PAD
         led_x, le_x, bu_x = {}, {}, {}
 
         for L in ledgers:
             les = led_to_les.get(L, [])
-            # place BUs; if none, allocate a slot for the LE itself
+            # place BUs of each LE (or the LE itself if no BUs)
             for key in les:
                 buses = le_to_bus.get(key, [])
                 if buses:
@@ -260,7 +269,7 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                     le_x[key] = next_x
                     next_x += X_STEP
 
-            # center each LE over its BUs when it has children
+            # center LEs over their BUs
             for key in les:
                 if key in le_x:
                     continue
@@ -269,16 +278,17 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                     xs = [bu_x[b] for b in buses]
                     le_x[key] = int(sum(xs) / len(xs))
 
-            # place ledger centered over its LEs
+            # center ledger over its LEs (or allocate if none)
             if les:
                 xs = [le_x[key] for key in les]
                 led_x[L] = int(sum(xs) / len(xs))
             else:
                 led_x[L] = next_x
                 next_x += X_STEP
+
             next_x += PAD_GROUP
 
-        # unassigned areas
+        # unassigned “parking lots”
         next_x += RIGHT_PAD
         for e in unassigned_les:
             le_x[("UNASSIGNED", e)] = next_x
@@ -289,34 +299,44 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                 bu_x[b] = next_x
                 next_x += X_STEP
 
-        # --- XML skeleton ---
+        # --- XML skeleton (white background) ---
         mxfile  = ET.Element("mxfile", attrib={"host": "app.diagrams.net"})
         diagram = ET.SubElement(mxfile, "diagram", attrib={"id": str(uuid.uuid4()), "name": "Enterprise Structure"})
         model   = ET.SubElement(diagram, "mxGraphModel", attrib={
             "dx": "1284", "dy": "682", "grid": "1", "gridSize": "10",
             "page": "1", "pageWidth": "1920", "pageHeight": "1080",
-            "background": "#ffffff"  # clean white
+            "background": "#ffffff"
         })
         root    = ET.SubElement(model, "root")
         ET.SubElement(root, "mxCell", attrib={"id": "0"})
         ET.SubElement(root, "mxCell", attrib={"id": "1", "parent": "0"})
 
+        # helpers
         def add_vertex(label, style, x, y, w=W, h=H):
             vid = uuid.uuid4().hex[:8]
             c = ET.SubElement(root, "mxCell", attrib={"id": vid, "value": label, "style": style, "vertex": "1", "parent": "1"})
             ET.SubElement(c, "mxGeometry", attrib={"x": str(int(x)), "y": str(int(y)), "width": str(w), "height": str(h), "as": "geometry"})
             return vid
 
-        def add_edge(src, tgt, style=S_EDGE_OTHER, bus_y=None):
+        def add_edge(src, tgt, style=S_EDGE_OTHER):
             eid = uuid.uuid4().hex[:8]
             c = ET.SubElement(root, "mxCell", attrib={
                 "id": eid, "value": "", "style": style, "edge": "1", "parent": "1",
                 "source": src, "target": tgt
             })
+            ET.SubElement(c, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
+
+        def add_bus_edge(src_id, src_center_x, tgt_id, tgt_center_x):
+            """LE → Ledger with two fixed waypoints on BUS_Y to avoid weird routing."""
+            eid = uuid.uuid4().hex[:8]
+            c = ET.SubElement(root, "mxCell", attrib={
+                "id": eid, "value": "", "style": S_EDGE_LEDGER, "edge": "1", "parent": "1",
+                "source": src_id, "target": tgt_id
+            })
             g = ET.SubElement(c, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
-            if bus_y is not None:
-                arr = ET.SubElement(g, "Array", attrib={"as": "points"})
-                ET.SubElement(arr, "mxPoint", attrib={"y": str(int(bus_y))})
+            arr = ET.SubElement(g, "Array", attrib={"as": "points"})
+            ET.SubElement(arr, "mxPoint", attrib={"x": str(int(src_center_x)), "y": str(int(BUS_Y))})
+            ET.SubElement(arr, "mxPoint", attrib={"x": str(int(tgt_center_x)), "y": str(int(BUS_Y))})
 
         # vertices
         id_map = {}
@@ -333,7 +353,7 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
         for e in unassigned_les:
             id_map[("E", "UNASSIGNED", e)] = add_vertex(e, S_LE, le_x[("UNASSIGNED", e)], Y_LE)
 
-        # edges
+        # edges BU → LE
         drawn = set()
         for _, r in df.iterrows():
             L, E, B = r["Ledger Name"], r["Legal Entity"], r["Business Unit"]
@@ -343,18 +363,22 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                     add_edge(id_map[("B", B)], id_map[("E", L, E)], style=S_EDGE_OTHER)
                     drawn.add(k)
 
+        # edges LE → Ledger via forced bus waypoints
         for _, r in df.iterrows():
             L, E = r["Ledger Name"], r["Legal Entity"]
             if L and E and (("E", L, E) in id_map) and (("L", L) in id_map):
                 k = ("E2L", L, E)
                 if k not in drawn:
-                    add_edge(id_map[("E", L, E)], id_map[("L", L)], style=S_EDGE_LEDGER, bus_y=BUS_Y)
+                    src_x_center = (le_x[(L, E)] if (L, E) in le_x else le_x[("UNASSIGNED", E)]) + W/2
+                    tgt_x_center = led_x[L] + W/2
+                    add_bus_edge(id_map[("E", L, E)], src_x_center, id_map[("L", L)], tgt_x_center)
                     drawn.add(k)
 
-        # legend
-        def add_legend(x=30, y=10):
+        # legend with extra breathing room
+        def add_legend(x=20, y=20):
             panel_w, panel_h = 210, 120
-            _ = add_vertex("", "rounded=1;fillColor=#FFFFFF;strokeColor=#CBD5E1;", x, y, panel_w, panel_h)
+            panel = add_vertex("", "rounded=1;fillColor=#FFFFFF;strokeColor=#CBD5E1;", x, y, panel_w, panel_h)
+
             title = ET.SubElement(root, "mxCell", attrib={
                 "id": uuid.uuid4().hex[:8], "value": "Legend",
                 "style": "text;verticalAlign=top;align=left;fontSize=13;fontStyle=1;",
@@ -363,12 +387,12 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
             ET.SubElement(title, "mxGeometry", attrib={"x": str(x+12), "y": str(y+8), "width": "120", "height": "18", "as": "geometry"})
 
             def swatch(lbl, color, ty):
+                gy = {"L": 36, "E": 62, "B": 88}[ty]
                 box = ET.SubElement(root, "mxCell", attrib={
                     "id": uuid.uuid4().hex[:8], "value": "",
                     "style": f"rounded=1;fillColor={color};strokeColor=#666666;",
                     "vertex": "1", "parent": "1"
                 })
-                gy = {"L": 36, "E": 62, "B": 88}[ty]
                 ET.SubElement(box, "mxGeometry", attrib={"x": str(x+12), "y": str(y+gy), "width": "18", "height": "12", "as": "geometry"})
                 txt = ET.SubElement(root, "mxCell", attrib={
                     "id": uuid.uuid4().hex[:8], "value": lbl,
@@ -382,10 +406,12 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
             swatch("Business Unit", "#FFF1B3", "B")
 
         add_legend()
+
         return ET.tostring(mxfile, encoding="utf-8", method="xml").decode("utf-8")
 
     def _drawio_url_from_xml(xml: str) -> str:
-        raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]  # raw DEFLATE
+        # raw DEFLATE + base64 for diagrams.net URL
+        raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]
         b64 = base64.b64encode(raw).decode("ascii")
         return f"https://app.diagrams.net/?title=EnterpriseStructure.drawio#R{b64}"
 
