@@ -182,6 +182,7 @@ else:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 # ===================== DRAW.IO DIAGRAM BLOCK (paste below the Excel button) =====================
+# ===================== DRAW.IO DIAGRAM BLOCK (paste below the Excel button) =====================
 if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
     import xml.etree.ElementTree as ET
     import zlib, base64, uuid
@@ -250,4 +251,95 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
         S_LE     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#A68000;fontSize=12;"
         S_BU     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=12;"
         # Upward orthogonal arrows, center-to-center
-        S_EDGE   = "endArrow=block;rounded=1;edgeS_
+        S_EDGE   = "endArrow=block;rounded=1;edgeStyle=orthogonalEdgeStyle;exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
+
+        def add_vertex(label, style, x, y, w=W, h=H):
+            cid = uuid.uuid4().hex[:8]
+            v = ET.SubElement(root, "mxCell",
+                              attrib={"id": cid, "value": label, "style": style, "vertex": "1", "parent": "1"})
+            ET.SubElement(v, "mxGeometry",
+                          attrib={"x": str(x), "y": str(y), "width": str(w), "height": str(h), "as": "geometry"})
+            return cid
+
+        def add_edge(src_id, tgt_id, label=""):
+            eid = uuid.uuid4().hex[:8]
+            e = ET.SubElement(root, "mxCell",
+                              attrib={"id": eid, "value": label, "style": S_EDGE,
+                                      "edge": "1", "parent": "1", "source": src_id, "target": tgt_id})
+            ET.SubElement(e, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
+
+        id_map = {}
+
+        # Place vertices (BUs bottom, LEs middle, Ledgers top)
+        for name in bus:
+            cid = add_vertex(name, S_BU, bu_x[name], Y_BU); id_map[("B", name)] = cid
+        for name in les:
+            cid = add_vertex(name, S_LE, le_x[name], Y_LE); id_map[("E", name)] = cid
+        for name in ledgers:
+            cid = add_vertex(name, S_LEDGER, led_x[name], Y_LEDGER); id_map[("L", name)] = cid
+
+        # Edges flow upward: BU -> LE, LE -> Ledger (dedup)
+        added = set()
+        for _, r in df.iterrows():
+            led = str(r["Ledger Name"]).strip()   if r["Ledger Name"]   else ""
+            le  = str(r["Legal Entity"]).strip()  if r["Legal Entity"]  else ""
+            bu  = str(r["Business Unit"]).strip() if r["Business Unit"] else ""
+
+            if le and bu and ("B", bu) in id_map and ("E", le) in id_map:
+                k = ("B2E", bu, le)
+                if k not in added:
+                    add_edge(id_map[("B", bu)], id_map[("E", le)]); added.add(k)
+
+            if led and le and ("E", le) in id_map and ("L", led) in id_map:
+                k = ("E2L", le, led)
+                if k not in added:
+                    add_edge(id_map[("E", le)], id_map[("L", led)]); added.add(k)
+
+        # ---------- 4) Legend (top-left) ----------
+        def add_text(text, x, y):
+            tid = uuid.uuid4().hex[:8]
+            t = ET.SubElement(root, "mxCell",
+                              attrib={"id": tid, "value": text,
+                                      "style": "text;html=1;align=left;verticalAlign=middle;resizable=0;autosize=1;",
+                                      "vertex": "1", "parent": "1"})
+            ET.SubElement(t, "mxGeometry",
+                          attrib={"x": str(x), "y": str(y), "width": "80", "height": "20", "as": "geometry"})
+            return tid
+
+        # Legend frame
+        LBOX_W, LBOX_H = 180, 120
+        add_vertex("Legend",
+                   "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;fontSize=12;",
+                   10, 10, LBOX_W, LBOX_H)
+
+        # Swatches + labels
+        def legend_row(fill_hex, label, y):
+            add_vertex("",
+                       f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill_hex};strokeColor=#666666;",
+                       20, y, 28, 18)
+            add_text(label, 56, y-1)
+
+        legend_row("#FFE6CC", "Ledger",        40)
+        legend_row("#FFF2CC", "Legal Entity",  68)
+        legend_row("#D5E8D4", "Business Unit", 96)
+
+        return ET.tostring(mxfile, encoding="utf-8", method="xml").decode("utf-8")
+
+    def _drawio_url_from_xml(xml: str) -> str:
+        # draw.io expects raw DEFLATE (no zlib header/footer) then base64
+        raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]
+        b64 = base64.b64encode(raw).decode("ascii")
+        return f"https://app.diagrams.net/?title=EnterpriseStructure.drawio#R{b64}"
+
+    _xml = _make_drawio_xml(df)
+
+    st.download_button(
+        "⬇️ Download diagram (.drawio)",
+        data=_xml.encode("utf-8"),
+        file_name="EnterpriseStructure.drawio",
+        mime="application/xml"
+    )
+
+    st.markdown(f"[🔗 Open in draw.io (preview)]({_drawio_url_from_xml(_xml)})")
+    st.caption("Arrows flow upward. Parents are centered over children. Colors match the sample; legend included.")
+# =================== END DRAW.IO DIAGRAM BLOCK ===================
