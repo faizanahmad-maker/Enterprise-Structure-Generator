@@ -7,10 +7,10 @@ st.title("Enterprise Structure Generator — Excel Only")
 
 st.markdown("""
 Upload up to **4 Oracle export ZIPs** (any order):
-- `GL_PRIMARY_LEDGER.csv` (Ledgers)
-- `XLE_ENTITY_PROFILE.csv` (Legal Entities)
-- `ORA_LEGAL_ENTITY_BAL_SEG_VAL_DEF.csv` and `ORA_GL_JOURNAL_CONFIG_DETAIL.csv` (Ledger↔LE mapping)
-- `FUN_BUSINESS_UNIT.csv` (Business Units)
+- `Manage General Ledger` (Ledgers)
+- `Manage Legal Entities` (Legal Entities)
+- `Assign Legal Entities` (Ledger↔LE mapping)
+- `Manage Business Units` (Business Units)
 """)
 
 uploads = st.file_uploader("Drop your ZIPs here", type="zip", accept_multiple_files=True)
