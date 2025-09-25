@@ -218,17 +218,17 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
                           attrib={"x": str(geom["x"]), "y": str(geom["y"]),
                                   "width": str(geom["w"]), "height": str(geom["h"]), "as": "geometry"})
 
-        def _add_edge(edge_id, src, tgt, label=""):
-    c = ET.SubElement(
-        root, "mxCell",
-        attrib={
-            "id": edge_id,
-            "value": label,
-            "style": "endArrow=block;edgeStyle=elbowEdgeStyle;rounded=1;",
-            "edge": "1",
-            "parent": "1",
-            "source": src,
-            "target": tgt
-        }
-    )
-    ET.SubElement(c, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
+       def _add_edge(edge_id, src, tgt, label=""):
+            c = ET.SubElement(
+                root, "mxCell",
+                attrib={
+                    "id": edge_id,
+                    "value": label,
+                    "style": "endArrow=block;edgeStyle=elbowEdgeStyle;rounded=1;",
+                    "edge": "1",
+                    "parent": "1",
+                    "source": src,
+                    "target": tgt
+            }
+        )
+        ET.SubElement(c, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
