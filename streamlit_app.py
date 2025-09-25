@@ -181,96 +181,45 @@ else:
         file_name="EnterpriseStructure.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-# ======= DRAW.IO DIAGRAM (paste this directly BELOW the Excel download_button) =======
-# Creates a .drawio file and a one-click link that opens the diagram in diagrams.net
-import xml.etree.ElementTree as ET, zlib, base64, uuid
+# ======= DRAW.IO DIAGRAM (safe block; runs only after df exists) =======
+if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
+    # Creates a .drawio file and a one-click link that opens the diagram in diagrams.net
+    import xml.etree.ElementTree as ET, zlib, base64, uuid
 
-def _make_drawio_xml(df: pd.DataFrame) -> str:
-    # Unique nodes per layer (ignore blanks)
-    ledgers = [x for x in df["Ledger Name"].dropna().unique() if x]
-    les     = [x for x in df["Legal Entity"].dropna().unique() if x]
-    bus     = [x for x in df["Business Unit"].dropna().unique() if x]
+    def _make_drawio_xml(df: pd.DataFrame) -> str:
+        # Unique nodes per layer (ignore blanks)
+        ledgers = [x for x in df["Ledger Name"].dropna().unique() if x]
+        les     = [x for x in df["Legal Entity"].dropna().unique() if x]
+        bus     = [x for x in df["Business Unit"].dropna().unique() if x]
 
-    # Simple 3-row layout: Ledgers (top), LEs (middle), BUs (bottom)
-    def _layer_positions(items, y, x_step=220, w=180, h=60):
-        pos = {}
-        for i, name in enumerate(items):
-            pos[name] = {"x": 40 + i * x_step, "y": y, "w": w, "h": h}
-        return pos
+        # Simple 3-row layout: Ledgers (top), LEs (middle), BUs (bottom)
+        def _layer_positions(items, y, x_step=220, w=180, h=60):
+            pos = {}
+            for i, name in enumerate(items):
+                pos[name] = {"x": 40 + i * x_step, "y": y, "w": w, "h": h}
+            return pos
 
-    pos_ledger = _layer_positions(ledgers, y=40)
-    pos_le     = _layer_positions(les,     y=240)
-    pos_bu     = _layer_positions(bus,     y=440)
+        pos_ledger = _layer_positions(ledgers, y=40)
+        pos_le     = _layer_positions(les,     y=240)
+        pos_bu     = _layer_positions(bus,     y=440)
 
-    # <mxfile><diagram><mxGraphModel><root>…
-    mxfile  = ET.Element("mxfile", attrib={"host": "app.diagrams.net"})
-    diagram = ET.SubElement(mxfile, "diagram", attrib={"id": str(uuid.uuid4()), "name": "Enterprise Structure"})
-    model   = ET.SubElement(diagram, "mxGraphModel")
-    root    = ET.SubElement(model, "root")
-    ET.SubElement(root, "mxCell", attrib={"id": "0"})
-    ET.SubElement(root, "mxCell", attrib={"id": "1", "parent": "0"})
+        # <mxfile><diagram><mxGraphModel><root>…
+        mxfile  = ET.Element("mxfile", attrib={"host": "app.diagrams.net"})
+        diagram = ET.SubElement(mxfile, "diagram", attrib={"id": str(uuid.uuid4()), "name": "Enterprise Structure"})
+        model   = ET.SubElement(diagram, "mxGraphModel")
+        root    = ET.SubElement(model, "root")
+        ET.SubElement(root, "mxCell", attrib={"id": "0"})
+        ET.SubElement(root, "mxCell", attrib={"id": "1", "parent": "0"})
 
-    def _add_vertex(cell_id, label, style, geom):
-        c = ET.SubElement(root, "mxCell",
-                          attrib={"id": cell_id, "value": label, "style": style, "vertex": "1", "parent": "1"})
-        ET.SubElement(c, "mxGeometry",
-                      attrib={"x": str(geom["x"]), "y": str(geom["y"]),
-                              "width": str(geom["w"]), "height": str(geom["h"]), "as": "geometry"})
+        def _add_vertex(cell_id, label, style, geom):
+            c = ET.SubElement(root, "mxCell",
+                              attrib={"id": cell_id, "value": label, "style": style, "vertex": "1", "parent": "1"})
+            ET.SubElement(c, "mxGeometry",
+                          attrib={"x": str(geom["x"]), "y": str(geom["y"]),
+                                  "width": str(geom["w"]), "height": str(geom["h"]), "as": "geometry"})
 
-    def _add_edge(edge_id, src, tgt, label=""):
-        c = ET.SubElement(root, "mxCell",
-                          attrib={"id": edge_id, "value": label,
-                                  "style": "endArrow=block;edgeStyle=elbowEdgeStyle;rounded=1;",
-                                  "edge": "1", "parent": "1", "source": src, "target": tgt})
-        ET.SubElement(c, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
-
-    # Node styles
-    S_LEDGER = "rounded=1;whiteSpace=wrap;html=1;fillColor=#e3f2fd;strokeColor=#1565c0;fontSize=12;"
-    S_LE     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#fff3e0;strokeColor=#ef6c00;fontSize=12;"
-    S_BU     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#2e7d32;fontSize=12;"
-
-    # Create vertices
-    id_map = {}
-    for name, geom in pos_ledger.items():
-        vid = f"L::{uuid.uuid4().hex[:8]}"; id_map[("L", name)] = vid; _add_vertex(vid, name, S_LEDGER, geom)
-    for name, geom in pos_le.items():
-        vid = f"E::{uuid.uuid4().hex[:8]}"; id_map[("E", name)] = vid; _add_vertex(vid, name, S_LE, geom)
-    for name, geom in pos_bu.items():
-        vid = f"B::{uuid.uuid4().hex[:8]}"; id_map[("B", name)] = vid; _add_vertex(vid, name, S_BU, geom)
-
-    # Create edges: Ledger→LE and LE→BU (dedup)
-    added = set()
-    for _, r in df.iterrows():
-        led, le, bu = r["Ledger Name"], r["Legal Entity"], r["Business Unit"]
-        if led and le and ("L", led) in id_map and ("E", le) in id_map:
-            k = ("L2E", led, le)
-            if k not in added:
-                _add_edge(f"e::{uuid.uuid4().hex[:8]}", id_map[("L", led)], id_map[("E", le)], ""); added.add(k)
-        if le and bu and ("E", le) in id_map and ("B", bu) in id_map:
-            k = ("E2B", le, bu)
-            if k not in added:
-                _add_edge(f"e::{uuid.uuid4().hex[:8]}", id_map[("E", le)], id_map[("B", bu)], ""); added.add(k)
-
-    return ET.tostring(mxfile, encoding="utf-8", method="xml").decode("utf-8")
-
-def _drawio_url_from_xml(xml: str) -> str:
-    # draw.io expects raw DEFLATE (no zlib header/footer) then base64
-    raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]
-    b64 = base64.b64encode(raw).decode("ascii")
-    return f"https://app.diagrams.net/?title=EnterpriseStructure.drawio#R{b64}"
-
-# Only run if df exists and has rows
-if isinstance(df, pd.DataFrame) and not df.empty:
-    _xml = _make_drawio_xml(df)
-
-    st.download_button(
-        "⬇️ Download diagram (.drawio)",
-        data=_xml.encode("utf-8"),
-        file_name="EnterpriseStructure.drawio",
-        mime="application/xml"
-    )
-
-    st.markdown(f"[🔗 Open in draw.io (preview)]({_drawio_url_from_xml(_xml)})")
-    st.caption("Opens in diagrams.net; click **File → Save** to persist to Drive/Desktop.")
-# ======= END DRAW.IO BLOCK =======
-
+        def _add_edge(edge_id, src, tgt, label=""):
+            c = ET.SubElement(root, "mxCell",
+                              attrib={"id": edge_id, "value": label,
+                                      "style": "endArrow=block;edgeStyle=elbowEdgeStyle;rounded=1;",
+                                      "edge": "1", "parent": "
