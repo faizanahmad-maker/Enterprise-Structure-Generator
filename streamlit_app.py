@@ -182,73 +182,83 @@ else:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 # ===================== DRAW.IO DIAGRAM BLOCK (paste below the Excel button) =====================
-# ===================== DRAW.IO DIAGRAM BLOCK (grouped by ledger, straight vertical edges) =====================
+# ===================== DRAW.IO DIAGRAM (grouped by ledger, keeps unassigned, curved edges) =====================
 if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
     import xml.etree.ElementTree as ET
     import zlib, base64, uuid
 
     def _make_drawio_xml(df: pd.DataFrame) -> str:
-        # ---------- 1) Build relationships ----------
+        # ---------- 1) Build sets + relationships from the dataframe ----------
         ledgers = [x for x in df["Ledger Name"].dropna().unique() if x]
         les     = [x for x in df["Legal Entity"].dropna().unique() if x]
         bus     = [x for x in df["Business Unit"].dropna().unique() if x]
 
-        le_to_bus = {}   # LE -> set(BUs)
         led_to_le = {}   # Ledger -> set(LEs)
+        le_to_bus = {}   # LE -> set(BUs)
         for _, r in df.iterrows():
-            led = (str(r["Ledger Name"]).strip()   if r["Ledger Name"]   else "")
-            le  = (str(r["Legal Entity"]).strip()  if r["Legal Entity"]  else "")
-            bu  = (str(r["Business Unit"]).strip() if r["Business Unit"] else "")
-            if le and bu:   le_to_bus.setdefault(le, set()).add(bu)
-            if led and le:  led_to_le.setdefault(led, set()).add(le)
+            L  = (str(r["Ledger Name"]).strip()   if r["Ledger Name"]   else "")
+            E  = (str(r["Legal Entity"]).strip()  if r["Legal Entity"]  else "")
+            BU = (str(r["Business Unit"]).strip() if r["Business Unit"] else "")
+            if L and E:    led_to_le.setdefault(L, set()).add(E)
+            if E and BU:   le_to_bus.setdefault(E, set()).add(BU)
 
-        # ---------- 2) Grouped layout (by ledger) ----------
-        # Each ledger gets its own "band": L on top, children LEs below, their BUs below.
+        # ---------- 2) Grouped layout (by ledger), then "unassigned" tails ----------
         base_x, step, GAP, W, H = 40, 220, 160, 180, 60
         Y_LEDGER, Y_LE, Y_BU = 40, 240, 440
 
         led_x, le_x, bu_x = {}, {}, {}
         cur_x = base_x
 
-        def _center_to_left(center):   # convert center X to left X for a W-wide box
-            return int(center - W/2)
+        def _center_to_left(cx):  # convert center X to left X
+            return int(cx - W/2)
 
+        # Place each ledger as a block: its LEs centered beneath, each LE’s BUs beneath it
         for L in sorted(ledgers):
-            les_in_group = sorted(led_to_le.get(L, [])) or [None]  # None means no LE
-            # For each LE, count slots = max(1, number of BUs). Total slots defines group width.
-            slots_meta = []
-            for le in les_in_group:
-                bu_list = sorted(le_to_bus.get(le, [])) if le else []
-                slots_meta.append((le, bu_list, max(1, len(bu_list))))
+            les_in_group = sorted(led_to_le.get(L, [])) or [None]  # None = ledger with no LEs
 
-            total_slots = sum(s for _, _, s in slots_meta)
+            # For each LE, slots = max(1, number of BUs)
+            meta = []
+            for E in les_in_group:
+                bu_list = sorted(le_to_bus.get(E, [])) if E else []
+                meta.append((E, bu_list, max(1, len(bu_list))))
+
+            total_slots = sum(s for _, _, s in meta)
             group_start = cur_x
             cursor = group_start
 
-            # Place BUs (bottom) and LEs (middle) within this group
-            for le, bu_list, slot_count in slots_meta:
+            # BUs bottom, LEs middle
+            for E, bu_list, slots in meta:
                 if bu_list:
-                    # centers for this LE's BU slots
                     centers = [cursor + (i + 0.5) * step for i in range(len(bu_list))]
-                    for i, b in enumerate(bu_list):
-                        bu_x[b] = _center_to_left(centers[i])
-                    le_center = sum(centers) / len(centers)
-                    if le:
-                        le_x[le] = _center_to_left(le_center)
+                    for i, BU in enumerate(bu_list):
+                        bu_x[BU] = _center_to_left(centers[i])
+                    if E:
+                        le_x[E] = _center_to_left(sum(centers)/len(centers))
                 else:
-                    # no BUs: give the LE one slot
-                    if le:
-                        le_x[le] = _center_to_left(cursor + 0.5 * step)
-                cursor += slot_count * step
+                    if E:  # LE with no BUs gets its own slot
+                        le_x[E] = _center_to_left(cursor + 0.5 * step)
+                cursor += slots * step
 
-            group_width = total_slots * step
+            group_width = total_slots * step if total_slots > 0 else step
             led_center = group_start + group_width / 2.0
             led_x[L] = _center_to_left(led_center)
+            cur_x += group_width + GAP
 
-            cur_x += group_width + GAP  # leave gap before next ledger group
+        # Unassigned LEs (present in df but not positioned above)
+        unassigned_les = [E for E in sorted(les) if E not in le_x]
+        if unassigned_les:
+            start = cur_x
+            for i, E in enumerate(unassigned_les):
+                le_x[E] = _center_to_left(start + (i + 0.5) * step)
+            cur_x = start + len(unassigned_les) * step + GAP
 
-        # If there are LEs with no ledger, and/or BUs with no LE, you can optionally drop them
-        # into an "Unassigned" group; omitted here for simplicity.
+        # Unassigned BUs (present in df but not positioned above)
+        unassigned_bus = [B for B in sorted(bus) if B not in bu_x]
+        if unassigned_bus:
+            start = cur_x
+            for i, B in enumerate(unassigned_bus):
+                bu_x[B] = _center_to_left(start + (i + 0.5) * step)
+            cur_x = start + len(unassigned_bus) * step + GAP
 
         # ---------- 3) Build mxfile ----------
         mxfile  = ET.Element("mxfile", attrib={"host": "app.diagrams.net"})
@@ -258,82 +268,70 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
         ET.SubElement(root, "mxCell", attrib={"id": "0"})
         ET.SubElement(root, "mxCell", attrib={"id": "1", "parent": "0"})
 
-        # Styles (requested palette)
-        # Ledger = red, LE = orange, BU = yellow
+        # Palette (match request): Ledger=Red, LE=Orange, BU=Yellow
         S_LEDGER = "rounded=1;whiteSpace=wrap;html=1;fillColor=#F8CECC;strokeColor=#B85450;fontSize=12;"
         S_LE     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FAD7AC;strokeColor=#D79B00;fontSize=12;"
         S_BU     = "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=12;"
-        # Straight, center-to-center vertical lines; no router “bus”
+
+        # Curved center-to-center edges; routing disabled to avoid “bus” lines
         S_EDGE   = (
             "endArrow=block;rounded=1;"
-            "noEdgeStyle=1;orthogonal=0;curved=0;jettySize=0;"
+            "noEdgeStyle=1;orthogonal=0;curved=1;jettySize=0;"
             "exitX=0.5;exitY=0;entryX=0.5;entryY=1;"
         )
 
         def add_vertex(label, style, x, y, w=W, h=H):
             cid = uuid.uuid4().hex[:8]
-            v = ET.SubElement(
-                root, "mxCell",
-                attrib={"id": cid, "value": label, "style": style, "vertex": "1", "parent": "1"}
-            )
-            ET.SubElement(
-                v, "mxGeometry",
-                attrib={"x": str(int(x)), "y": str(int(y)), "width": str(w), "height": str(h), "as": "geometry"}
-            )
+            v = ET.SubElement(root, "mxCell",
+                              attrib={"id": cid, "value": label, "style": style, "vertex": "1", "parent": "1"})
+            ET.SubElement(v, "mxGeometry",
+                          attrib={"x": str(int(x)), "y": str(int(y)), "width": str(w), "height": str(h), "as": "geometry"})
             return cid
 
-        def add_edge(src_id, tgt_id, label=""):
+        def add_edge(src_id, tgt_id):
             eid = uuid.uuid4().hex[:8]
-            e = ET.SubElement(
-                root, "mxCell",
-                attrib={"id": eid, "value": label, "style": S_EDGE, "edge": "1", "parent": "1",
-                        "source": src_id, "target": tgt_id}
-            )
+            e = ET.SubElement(root, "mxCell",
+                              attrib={"id": eid, "value": "", "style": S_EDGE, "edge": "1", "parent": "1",
+                                      "source": src_id, "target": tgt_id})
             ET.SubElement(e, "mxGeometry", attrib={"relative": "1", "as": "geometry"})
 
+        # Place vertices
         id_map = {}
+        for B, x in bu_x.items(): id_map[("B", B)] = add_vertex(B, S_BU, x, Y_BU)
+        for E, x in le_x.items(): id_map[("E", E)] = add_vertex(E, S_LE, x, Y_LE)
+        for L, x in led_x.items(): id_map[("L", L)] = add_vertex(L, S_LEDGER, x, Y_LEDGER)
 
-        # Place vertices: BUs bottom, LEs middle, Ledgers top (only those that were positioned)
-        for b, x in bu_x.items():
-            id_map[("B", b)] = add_vertex(b, S_BU, x, Y_BU)
-        for e, x in le_x.items():
-            id_map[("E", e)] = add_vertex(e, S_LE, x, Y_LE)
-        for l, x in led_x.items():
-            id_map[("L", l)] = add_vertex(l, S_LEDGER, x, Y_LEDGER)
-
-        # Edges flow upward: BU -> LE, LE -> Ledger (dedup)
-        added = set()
+        # Draw edges (curved, upward)
+        drawn = set()
         for _, r in df.iterrows():
-            led = (str(r["Ledger Name"]).strip()   if r["Ledger Name"]   else "")
-            le  = (str(r["Legal Entity"]).strip()  if r["Legal Entity"]  else "")
-            bu  = (str(r["Business Unit"]).strip() if r["Business Unit"] else "")
+            L  = (str(r["Ledger Name"]).strip()   if r["Ledger Name"]   else "")
+            E  = (str(r["Legal Entity"]).strip()  if r["Legal Entity"]  else "")
+            B  = (str(r["Business Unit"]).strip() if r["Business Unit"] else "")
 
-            if le and bu and ("B", bu) in id_map and ("E", le) in id_map:
-                k = ("B2E", bu, le)
-                if k not in added:
-                    add_edge(id_map[("B", bu)], id_map[("E", le)]); added.add(k)
+            if B and E and ("B", B) in id_map and ("E", E) in id_map:
+                k = ("B2E", B, E)
+                if k not in drawn: add_edge(id_map[("B", B)], id_map[("E", E)]); drawn.add(k)
 
-            if led and le and ("E", le) in id_map and ("L", led) in id_map:
-                k = ("E2L", le, led)
-                if k not in added:
-                    add_edge(id_map[("E", le)], id_map[("L", led)]); added.add(k)
+            if E and L and ("E", E) in id_map and ("L", L) in id_map:
+                k = ("E2L", E, L)
+                if k not in drawn: add_edge(id_map[("E", E)], id_map[("L", L)]); drawn.add(k)
 
-        # ---------- 4) Small legend (top-left) ----------
+        # ---------- 4) Legend ----------
         def add_text(text, x, y):
             tid = uuid.uuid4().hex[:8]
-            t = ET.SubElement(
-                root, "mxCell",
-                attrib={"id": tid, "value": text,
-                        "style": "text;html=1;align=left;verticalAlign=middle;resizable=0;autosize=1;",
-                        "vertex": "1", "parent": "1"}
-            )
-            ET.SubElement(t, "mxGeometry", attrib={"x": str(x), "y": str(y), "width": "90", "height": "20", "as": "geometry"})
+            t = ET.SubElement(root, "mxCell",
+                              attrib={"id": tid, "value": text,
+                                      "style": "text;html=1;align=left;verticalAlign=middle;resizable=0;autosize=1;",
+                                      "vertex": "1", "parent": "1"})
+            ET.SubElement(t, "mxGeometry", attrib={"x": str(x), "y": str(y),
+                                                   "width": "90", "height": "20", "as": "geometry"})
             return tid
 
-        add_vertex("Legend", "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;fontSize=12;", 10, 10, 180, 120)
-        # swatch rows
+        add_vertex("Legend", "rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#666666;fontSize=12;",
+                   10, 10, 180, 120)
         def legend_row(fill_hex, label, y):
-            add_vertex("", f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill_hex};strokeColor=#666666;", 20, y, 28, 18)
+            add_vertex("", f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill_hex};strokeColor=#666666;",
+                       20, y, 28, 18)
             add_text(label, 56, y - 1)
 
         legend_row("#F8CECC", "Ledger",        40)
@@ -343,19 +341,13 @@ if "df" in locals() and isinstance(df, pd.DataFrame) and not df.empty:
         return ET.tostring(mxfile, encoding="utf-8", method="xml").decode("utf-8")
 
     def _drawio_url_from_xml(xml: str) -> str:
-        # draw.io expects raw DEFLATE (no zlib header/footer) then base64
-        raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]
+        raw = zlib.compress(xml.encode("utf-8"), level=9)[2:-4]  # raw DEFLATE
         b64 = base64.b64encode(raw).decode("ascii")
         return f"https://app.diagrams.net/?title=EnterpriseStructure.drawio#R{b64}"
 
     _xml = _make_drawio_xml(df)
-
-    st.download_button(
-        "⬇️ Download diagram (.drawio)",
-        data=_xml.encode("utf-8"),
-        file_name="EnterpriseStructure.drawio",
-        mime="application/xml"
-    )
+    st.download_button("⬇️ Download diagram (.drawio)", _xml.encode("utf-8"),
+                       file_name="EnterpriseStructure.drawio", mime="application/xml")
     st.markdown(f"[🔗 Open in draw.io (preview)]({_drawio_url_from_xml(_xml)})")
-    st.caption("Grouped by Ledger • straight center-to-center vertical lines • Ledger=Red, LE=Orange, BU=Yellow • Legend included.")
-# =================== END DRAW.IO DIAGRAM BLOCK ===================
+    st.caption("Grouped by Ledger • curved center-to-center arrows • all unassigned LEs/BUs shown at right • Legend included.")
+# =================== END DRAW.IO DIAGRAM ===================
